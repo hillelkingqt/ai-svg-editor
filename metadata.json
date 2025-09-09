@@ -1,0 +1,5 @@
+{
+  "name": "Live SVG Visualizer",
+  "description": "A beautiful and interactive web application to instantly render and visualize SVG code. Paste your SVG markup into the editor and see it come to life in the preview panel.",
+  "requestFramePermissions": []
+}
