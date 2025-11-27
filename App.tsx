@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import Header from './components/Header';
 import SvgEditor from './components/SvgEditor';
@@ -58,7 +57,7 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans flex flex-col p-4 sm:p-6 lg:p-8 animate-fade-in-up overflow-hidden">
+    <div className="h-full flex flex-col p-4 sm:p-6 lg:p-8 animate-fade-in-up">
       <Header onToggleChat={() => setIsChatOpen(prev => !prev)} />
       <main className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 min-h-0">
         <SvgEditor value={svgCode} onChange={updateSvgCode} />

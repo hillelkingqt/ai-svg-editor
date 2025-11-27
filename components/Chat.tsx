@@ -12,7 +12,7 @@ interface Message {
   id: number;
   sender: 'user' | 'ai';
   text?: string;
-  image?: string; // base64 image for display
+  image?: string; 
   type: MessageType;
   creation?: {
     name: string;
@@ -28,18 +28,19 @@ interface ChatProps {
   initialCode: string;
 }
 
-const systemInstruction = `You are a friendly, creative, and conversational AI assistant specializing in Scalable Vector Graphics (SVG). Your primary purpose is to help users create and modify SVG code in a live visualizer.
+const systemInstruction = `You are a visionary, artistic AI assistant running on Gemini 3 Pro. You specialize in Scalable Vector Graphics (SVG). 
 
-**Core Directives:**
-1.  **Be Conversational:** Engage in friendly conversation. You can respond to greetings like "hello" and "how are you."
-2.  **Stay on Topic:** While you can chat, your main goal is SVG creation. Politely decline to perform complex, unrelated tasks. For example, if asked for math help, you could say, "I'm more of an artist than a mathematician! How about I draw you a cool geometric shape instead?"
-3.  **Strict Output Protocol:** When a user asks you to draw or modify an SVG, you MUST follow this multi-step protocol exactly:
-    - **Step 1: Name the Artwork.** On the very first line, write \`NAME: \` followed by a short, descriptive name for the artwork (e.g., \`NAME: A vibrant sunset over mountains\`).
-    - **Step 2: Generate the SVG.** On the next line, provide ONLY the raw, valid SVG code. It must start directly with \`<svg ...>\`. NEVER wrap it in Markdown backticks.
-    - **Step 3: Signal Completion.** After the final \`</svg>\` tag, on a new line, write exactly \`STATUS: DONE\`.
-    - **Step 4: Follow Up.** On the final line, write a short, friendly, conversational follow-up message (e.g., "Here you go! I've created the vibrant sunset you asked for.").
-4.  **Image Interpretation:** If a user uploads an image, use it as inspiration to generate a new SVG based on their request.
-5.  **Modification & History:** Use the conversation history and the provided current SVG code to understand and fulfill modification requests.`;
+**Style Guide:**
+- Your tone is sophisticated, creative, and enthusiastic.
+- You think deeply before you draw.
+
+**Strict Protocol for Drawing:**
+When asked to draw or modify an SVG:
+1.  **Thinking Phase:** First, you MUST briefly explain your design choices and reasoning.
+2.  **Naming:** Write \`NAME: \` followed by a title.
+3.  **Code:** Write the raw SVG code on a new line (start with <svg, no markdown).
+4.  **Completion:** Write \`STATUS: DONE\` after the svg tag.
+5.  **Closing:** A short elegant closing remark.`;
 
 const fileToGenerativePart = async (file: File): Promise<Part> => {
     const base64EncodedDataPromise = new Promise<string>((resolve) => {
@@ -54,10 +55,11 @@ const fileToGenerativePart = async (file: File): Promise<Part> => {
 
 const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitleChange, initialCode }) => {
   const [messages, setMessages] = useState<Message[]>([
-    { id: 1, text: "Hello! I'm your AI SVG assistant. Ask me to draw something, or upload an image for inspiration!", sender: 'ai', type: 'text' }
+    { id: 1, text: "Greetings. I am Gemini 3 Pro. I can visualize your imagination. What shall we create together today?", sender: 'ai', type: 'text' }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [thinkingState, setThinkingState] = useState<'idle' | 'thinking' | 'generating'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -70,7 +72,14 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
     try {
       if (!process.env.API_KEY) throw new Error("API key is missing.");
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      return ai.chats.create({ model: 'gemini-2.5-flash', config: { systemInstruction }});
+      // Using gemini-3-pro-preview with thinking budget as requested
+      return ai.chats.create({ 
+        model: 'gemini-3-pro-preview', 
+        config: { 
+            systemInstruction,
+            thinkingConfig: { thinkingBudget: 16384 } 
+        }
+      });
     } catch (e) {
       setError((e as Error).message);
       return null;
@@ -79,7 +88,7 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, thinkingState]);
   
   useEffect(() => {
     if (isOpen) {
@@ -128,10 +137,11 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
     setInput('');
     setAttachedFile(null);
     setIsLoading(true);
+    setThinkingState('thinking');
     setError(null);
 
     try {
-      const parts: (string | Part)[] = [`This is the current SVG code on the editor:\n\`\`\`svg\n${initialCode}\n\`\`\`\n\nUser request: ${input}`];
+      const parts: (string | Part)[] = [`Current SVG Code Context:\n\`\`\`svg\n${initialCode}\n\`\`\`\n\nRequest: ${input}`];
       if (attachedFile) {
         const imagePart = await fileToGenerativePart(attachedFile);
         parts.push(imagePart);
@@ -140,31 +150,52 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
       const responseStream = await chat.sendMessageStream({ message: parts });
       
       let buffer = '';
-      let state: 'finding_name' | 'streaming_svg' | 'streaming_follow_up' = 'finding_name';
+      let state: 'reasoning' | 'finding_name' | 'streaming_svg' | 'streaming_follow_up' = 'reasoning';
       let creationMessageId: number | null = null;
       let followUpMessageId: number | null = null;
-      // FIX: Use a local variable to accumulate SVG code during streaming to avoid type errors and stale state.
       let currentSvgCode = '';
+      let textResponseId = Date.now() + 10;
+
+      // Initial Placeholder for text response
+      setMessages(prev => [...prev, { id: textResponseId, text: '', sender: 'ai', type: 'text' }]);
 
       for await (const chunk of responseStream) {
-        buffer += chunk.text;
+        // Since we can't easily distinguish 'thought' from 'text' in the stream without complex parsing
+        // (as the API mixes them or hides thoughts), we treat early text as reasoning/intro.
+        const chunkText = chunk.text || '';
+        buffer += chunkText;
 
-        if (state === 'finding_name') {
-            const nameMatch = buffer.match(/^NAME: (.*)\n/);
+        if (state === 'reasoning') {
+            // Check if we hit the name protocol
+            const nameMatch = buffer.match(/NAME: (.*)\n/);
             if (nameMatch) {
+                setThinkingState('generating');
                 const name = nameMatch[1].trim();
                 onSvgTitleChange(name);
-                creationMessageId = Date.now();
+                
+                // Finalize the reasoning text in the message
+                const reasoningText = buffer.substring(0, nameMatch.index).trim();
+                setMessages(prev => prev.map(msg => 
+                    msg.id === textResponseId ? { ...msg, text: reasoningText } : msg
+                ));
+
+                creationMessageId = Date.now() + 20;
                 setMessages(prev => [...prev, {
                     id: creationMessageId!,
                     sender: 'ai',
                     type: 'creation',
                     creation: { name, status: 'creating' }
                 }]);
-                buffer = buffer.substring(nameMatch[0].length);
+                
+                buffer = buffer.substring(nameMatch.index! + nameMatch[0].length);
                 state = 'streaming_svg';
-                onSvgCodeChange(''); // Clear previous SVG
+                onSvgCodeChange(''); 
                 currentSvgCode = '';
+            } else {
+                // Stream reasoning/intro text
+                 setMessages(prev => prev.map(msg => 
+                    msg.id === textResponseId ? { ...msg, text: buffer } : msg
+                ));
             }
         }
         
@@ -172,7 +203,6 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
             const statusMatch = buffer.indexOf('STATUS: DONE');
             if (statusMatch !== -1) {
                 const svgPart = buffer.substring(0, statusMatch);
-                // FIX for line 173: Append to local accumulator and pass the full string.
                 currentSvgCode += svgPart;
                 onSvgCodeChange(currentSvgCode);
                 setMessages(prev => prev.map(msg => 
@@ -180,36 +210,29 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
                 ));
                 buffer = buffer.substring(statusMatch + 'STATUS: DONE'.length).trimStart();
                 state = 'streaming_follow_up';
+                followUpMessageId = Date.now() + 30;
+                setMessages(prev => [...prev, { id: followUpMessageId!, text: '', sender: 'ai', type: 'text' }]);
             } else {
-                // FIX for line 180: Append buffer to accumulator and clear buffer to prevent duplication.
                 currentSvgCode += buffer;
                 onSvgCodeChange(currentSvgCode);
                 buffer = '';
             }
         }
 
-        if (state === 'streaming_follow_up' && buffer.length > 0) {
-            if (!followUpMessageId) {
-                followUpMessageId = Date.now() + 1;
-                setMessages(prev => [...prev, { id: followUpMessageId!, text: buffer, sender: 'ai', type: 'text' }]);
-            } else {
-                setMessages(prev => prev.map(msg => 
-                    msg.id === followUpMessageId ? { ...msg, text: (msg.text || '') + chunk.text } : msg
-                ));
-            }
+        if (state === 'streaming_follow_up') {
+             setMessages(prev => prev.map(msg => 
+                msg.id === followUpMessageId ? { ...msg, text: (msg.text || '') + chunkText } : msg
+            ));
         }
-      }
-      // Handle cases where AI gives a simple text response without the protocol
-      if (state === 'finding_name' && buffer.length > 0) {
-        setMessages(prev => [...prev, { id: Date.now(), text: buffer, sender: 'ai', type: 'text'}]);
       }
 
     } catch (e) {
-        const errorMessage = "Sorry, an error occurred. Please verify your API key and try again.";
+        const errorMessage = "I encountered an anomaly in the creative matrix. Please try again.";
         setError(errorMessage);
         setMessages(prev => [...prev, { id: Date.now(), text: errorMessage, sender: 'ai', type: 'text' }]);
     } finally {
         setIsLoading(false);
+        setThinkingState('idle');
     }
   };
 
@@ -218,30 +241,37 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
       const { name, status } = message.creation;
       const isCreating = status === 'creating';
       return (
-        <div className={`p-3 rounded-2xl animate-fade-in-up shadow-lg bg-slate-800/80 ring-1 ring-white/10 text-slate-200 rounded-bl-none`}>
-          <div className="flex items-center gap-2">
+        <div className={`p-4 rounded-2xl animate-fade-in-up glass-panel border-l-4 border-l-sky-500 overflow-hidden relative`}>
+          <div className="absolute inset-0 bg-gradient-to-r from-sky-500/10 to-violet-500/10"></div>
+          <div className="flex items-center gap-3 relative z-10">
             {isCreating ? (
-              <>
-                <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0s'}}></span>
-                <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></span>
-                <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0.4s'}}></span>
-              </>
+              <div className="relative flex h-5 w-5">
+                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                 <span className="relative inline-flex rounded-full h-5 w-5 bg-sky-500"></span>
+              </div>
             ) : (
-              <CheckIcon className="w-4 h-4 text-emerald-400"/>
+              <div className="bg-emerald-500/20 p-1.5 rounded-full border border-emerald-500/30">
+                  <CheckIcon className="w-4 h-4 text-emerald-400"/>
+              </div>
             )}
-            <p className="text-sm">
-              {isCreating ? 'Creating:' : 'Created:'} <span className="font-medium text-white">{name}</span>
-            </p>
+            <div>
+                 <p className="text-[10px] text-sky-300 uppercase tracking-widest font-bold mb-0.5">{isCreating ? 'GENERATING GRAPHICS' : 'RENDER COMPLETE'}</p>
+                 <p className="font-semibold text-white text-base">{name}</p>
+            </div>
           </div>
         </div>
       );
     }
     return (
        <div 
-          className={`p-3 rounded-2xl animate-fade-in-up shadow-lg ${message.sender === 'user' ? 'bg-gradient-to-br from-violet-600 to-purple-600 text-white rounded-br-none' : 'bg-slate-800/80 ring-1 ring-white/10 text-slate-200 rounded-bl-none'}`}
+          className={`p-4 rounded-2xl animate-fade-in-up shadow-xl backdrop-blur-md border ${
+              message.sender === 'user' 
+              ? 'bg-gradient-to-br from-violet-600/90 to-fuchsia-600/90 text-white border-white/10 rounded-br-none' 
+              : 'glass-panel text-slate-200 rounded-bl-none'
+          }`}
           style={{ animationDelay: '50ms', animationFillMode: 'backwards' }}
       >
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.text || ' '}</p>
+          <p className="text-sm leading-relaxed whitespace-pre-wrap font-light tracking-wide">{message.text || ' '}</p>
       </div>
     );
   }
@@ -249,107 +279,119 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
   return (
     <>
       <div 
-        className={`fixed inset-0 bg-black/60 z-40 transition-opacity duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 transition-opacity duration-500 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={onClose}
         aria-hidden="true"
       />
       <div 
-        className={`fixed top-0 left-0 bottom-0 z-50 w-full max-w-lg flex flex-col transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed top-0 left-0 bottom-0 z-50 w-full max-w-lg flex flex-col transition-transform duration-500 cubic-bezier(0.19, 1, 0.22, 1) ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="chat-heading"
         onPaste={handlePaste}
       >
-        <div className="flex-1 flex flex-col bg-slate-900/70 backdrop-blur-2xl border-r border-slate-700/50 m-2 my-4 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden">
-            <header className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
+        <div className="flex-1 flex flex-col glass-panel m-3 sm:m-4 rounded-[2rem] overflow-hidden shadow-2xl shadow-black/50 border border-white/10 relative">
+            <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-white/5 to-transparent h-32"></div>
+            
+            {/* Header */}
+            <header className="flex items-center justify-between p-5 border-b border-white/5 bg-white/5 backdrop-blur-xl z-10">
               <div className="flex items-center gap-3">
-                <div className="relative">
-                    <div className="absolute -inset-1 bg-gradient-to-br from-sky-400 to-violet-500 rounded-lg blur opacity-75"></div>
-                    <div className="relative bg-slate-900 p-2 rounded-lg shadow-lg">
-                        <AiIcon className="w-6 h-6 text-white"/>
+                <div className="relative group">
+                    <div className="absolute -inset-2 bg-gradient-to-r from-sky-400 to-fuchsia-500 rounded-full blur opacity-40 group-hover:opacity-60 transition-opacity duration-500 animate-pulse-slow"></div>
+                    <div className="relative bg-black/40 p-2.5 rounded-xl border border-white/10">
+                        <AiIcon className="w-5 h-5 text-white"/>
                     </div>
                 </div>
-                <h2 id="chat-heading" className="text-lg font-bold text-white">AI Assistant</h2>
+                <div>
+                    <h2 className="text-lg font-bold text-white tracking-tight">Gemini 3 Pro</h2>
+                    <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <p className="text-xs text-sky-300 font-medium tracking-wide">Live Reasoning Active</p>
+                    </div>
+                </div>
               </div>
-              <button onClick={onClose} className="p-1 text-slate-400 hover:text-white transition-colors rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-900 focus:ring-sky-400">
+              <button onClick={onClose} className="p-2 text-slate-400 hover:text-white transition-colors rounded-full hover:bg-white/10">
                 <CloseIcon className="w-6 h-6" />
-                <span className="sr-only">Close chat</span>
               </button>
             </header>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            {/* Chat Area */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 scroll-smooth z-10">
               {messages.map((message) => (
                 <div key={message.id} className={`flex items-start gap-3 w-full ${message.sender === 'user' ? 'flex-row-reverse' : ''}`}>
                   {message.sender === 'ai' && (
-                    <div className="w-8 h-8 flex-shrink-0 bg-slate-800 rounded-full flex items-center justify-center ring-1 ring-slate-700">
-                      <AiIcon className="w-5 h-5 text-sky-400" />
+                    <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/20">
+                      <AiIcon className="w-4 h-4 text-white" />
                     </div>
                   )}
-                  <div className={`flex flex-col gap-1 max-w-md ${message.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className={`flex flex-col gap-2 max-w-[85%] ${message.sender === 'user' ? 'items-end' : 'items-start'}`}>
                     {message.image && (
-                         <img src={message.image} alt="User upload preview" className="rounded-xl max-h-48 w-auto mb-2 border-2 border-violet-500/50" />
+                         <img src={message.image} alt="User upload" className="rounded-xl max-h-48 w-auto mb-2 border border-white/20 shadow-lg" />
                     )}
                     {renderMessageContent(message)}
                   </div>
                 </div>
               ))}
-              {isLoading && messages.every(m => m.type !== 'creation' || m.creation?.status !== 'creating') && (
-                 <div className="flex items-start gap-3">
-                   <div className="w-8 h-8 flex-shrink-0 bg-slate-800 rounded-full flex items-center justify-center ring-1 ring-slate-700">
-                      <AiIcon className="w-5 h-5 text-sky-400" />
+              
+              {/* Thinking Indicator */}
+              {thinkingState === 'thinking' && (
+                 <div className="flex items-start gap-3 animate-fade-in w-full">
+                   <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/20">
+                      <AiIcon className="w-4 h-4 text-white" />
                     </div>
-                   <div className="max-w-md p-3 rounded-2xl bg-slate-800/80 ring-1 ring-white/10 text-slate-200 rounded-bl-none flex items-center gap-2">
-                     <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0s'}}></span>
-                     <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></span>
-                     <span className="h-2 w-2 bg-sky-400 rounded-full animate-pulse" style={{animationDelay: '0.4s'}}></span>
+                   <div className="glass-input px-4 py-3 rounded-2xl rounded-bl-none flex items-center gap-3 border border-sky-500/30 shadow-[0_0_20px_rgba(14,165,233,0.15)] flex-1 max-w-[85%]">
+                     <div className="flex space-x-1">
+                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0s'}}></span>
+                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0.15s'}}></span>
+                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0.3s'}}></span>
+                     </div>
+                     <span className="text-xs font-mono text-sky-300 tracking-wider uppercase">Deep Reasoning Process...</span>
                    </div>
                  </div>
               )}
                {error && !isLoading && (
-                  <div className="flex justify-center p-2">
-                      <p className="text-sm text-red-400 bg-red-900/50 px-3 py-2 rounded-lg text-center">{error}</p>
+                  <div className="flex justify-center p-2 animate-fade-in">
+                      <p className="text-xs font-mono text-red-300 bg-red-500/10 border border-red-500/20 px-4 py-2 rounded-lg backdrop-blur-sm">{error}</p>
                   </div>
                 )}
               <div ref={messagesEndRef} />
             </div>
             
-            <footer className="p-4 border-t border-white/10 flex-shrink-0 bg-slate-900/50">
+            {/* Input Area */}
+            <footer className="p-5 border-t border-white/5 bg-black/40 backdrop-blur-xl z-20">
               {previewUrl && (
-                  <div className="relative mb-2 p-2 bg-slate-800 rounded-lg">
-                      <img src={previewUrl} alt="Preview" className="max-h-24 rounded-md"/>
-                      <button onClick={() => setAttachedFile(null)} className="absolute top-0 right-0 -mt-2 -mr-2 bg-slate-700 text-white rounded-full p-0.5 hover:bg-red-500 transition-colors">
-                          <CloseIcon className="w-4 h-4" />
+                  <div className="relative mb-3 inline-block animate-fade-in-up">
+                      <img src={previewUrl} alt="Preview" className="h-16 rounded-lg border border-white/20 shadow-lg"/>
+                      <button onClick={() => setAttachedFile(null)} className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full p-1 border border-white/20 hover:bg-red-500 hover:border-red-500 transition-colors">
+                          <CloseIcon className="w-3 h-3" />
                       </button>
                   </div>
               )}
-              <form onSubmit={handleSubmit} className="flex items-center gap-3">
+              <form onSubmit={handleSubmit} className="flex items-end gap-3">
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
                 <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    aria-label="Attach file"
-                    className="p-3 bg-slate-800 text-slate-400 rounded-lg hover:bg-slate-700 hover:text-sky-400 ring-1 ring-slate-700 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                    className="p-3.5 glass-button text-slate-300 rounded-xl hover:text-sky-300 group transition-all"
+                    title="Upload Image"
                 >
-                    <PaperclipIcon className="w-5 h-5"/>
+                    <PaperclipIcon className="w-5 h-5 group-hover:scale-110 transition-transform"/>
                 </button>
-                <div className="relative flex-1">
+                <div className="relative flex-1 group">
                     <input
                       ref={inputRef}
                       type="text"
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
-                      placeholder="Ask me to draw an SVG..."
-                      aria-label="Chat input"
+                      placeholder="Describe your vision..."
                       disabled={isLoading || !!error}
-                      className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-lg pl-4 pr-12 py-3 outline-none ring-1 ring-slate-700 focus:ring-2 focus:ring-sky-400 transition-all disabled:opacity-50"
+                      className="w-full glass-input text-sm text-white placeholder-slate-400 rounded-xl pl-4 pr-12 py-3.5 outline-none focus:border-sky-500/50 focus:bg-white/5 transition-all disabled:opacity-50"
                     />
                     <button 
                       type="submit" 
                       disabled={isLoading || (!input.trim() && !attachedFile) || !!error}
-                      aria-label="Send message"
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 bg-gradient-to-br from-sky-500 to-sky-400 text-white rounded-md hover:from-sky-400 hover:to-sky-300 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-slate-800 focus:ring-white shadow-lg shadow-sky-500/10 hover:shadow-sky-400/20"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 bg-gradient-to-tr from-sky-500 to-indigo-500 text-white rounded-lg hover:shadow-[0_0_15px_rgba(14,165,233,0.4)] disabled:opacity-50 disabled:shadow-none transition-all duration-300"
                     >
-                      <SendIcon className="w-5 h-5"/>
+                      <SendIcon className="w-4 h-4"/>
                     </button>
                 </div>
               </form>

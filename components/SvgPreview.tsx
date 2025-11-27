@@ -1,4 +1,3 @@
-
 import React, { useRef } from 'react';
 import { DownloadIcon } from './icons/DownloadIcon';
 import { ImageIcon } from './icons/ImageIcon';
@@ -43,9 +42,8 @@ const SvgPreview: React.FC<SvgPreviewProps> = ({ svgCode, title }) => {
     const url = URL.createObjectURL(svgBlob);
 
     img.onload = () => {
-      // Use natural SVG dimensions for higher quality export
       const svgRect = svgElement.getBoundingClientRect();
-      const scale = 2; // Upscale for better resolution
+      const scale = 2; 
       canvas.width = svgRect.width * scale;
       canvas.height = svgRect.height * scale;
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -63,34 +61,33 @@ const SvgPreview: React.FC<SvgPreviewProps> = ({ svgCode, title }) => {
   };
 
   return (
-    <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl shadow-lg ring-1 ring-white/10 flex flex-col overflow-hidden">
-      <div className="flex-shrink-0 bg-slate-800/60 px-4 py-2 border-b border-white/10 flex items-center justify-between">
-        <h2 className="text-sm font-medium text-slate-300">Live Preview</h2>
+    <div className="glass-panel rounded-3xl flex flex-col overflow-hidden ring-1 ring-white/10 hover:ring-white/20 transition-all duration-300">
+      <div className="flex-shrink-0 px-5 py-3 border-b border-white/5 flex items-center justify-between bg-white/5">
+        <h2 className="text-sm font-medium text-slate-200 tracking-wide">Live Canvas</h2>
         <div className="flex items-center gap-2">
           <button
             onClick={handleDownloadPNG}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs rounded-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-sky-400 bg-slate-700/50 hover:bg-slate-700 text-slate-300"
+            className="glass-button flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-slate-300 hover:text-white"
             title="Download as PNG"
-            aria-label="Download as PNG"
           >
             <ImageIcon className="w-3.5 h-3.5" />
             <span>PNG</span>
           </button>
           <button
             onClick={handleDownloadSVG}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs rounded-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-sky-400 bg-slate-700/50 hover:bg-slate-700 text-slate-300"
+            className="glass-button flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-slate-300 hover:text-white"
             title="Download as SVG"
-            aria-label="Download as SVG"
           >
             <DownloadIcon className="w-3.5 h-3.5" />
             <span>SVG</span>
           </button>
         </div>
       </div>
-      <div className="flex-1 checkerboard-bg p-4 flex items-center justify-center">
+      <div className="flex-1 checkerboard-bg p-8 flex items-center justify-center relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-tr from-indigo-500/5 to-sky-500/5 pointer-events-none"></div>
         <div
           ref={previewRef}
-          className="w-full h-full animate-fade-in flex items-center justify-center"
+          className="w-full h-full animate-fade-in flex items-center justify-center filter drop-shadow-2xl"
           dangerouslySetInnerHTML={{ __html: svgCode }}
         />
       </div>

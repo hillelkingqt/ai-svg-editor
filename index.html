@@ -7,62 +7,137 @@
     <title>Live SVG Visualizer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Fira+Code:wght@400;500&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
       
+      :root {
+        --glass-border: rgba(255, 255, 255, 0.08);
+        --glass-bg: rgba(15, 23, 42, 0.3);
+        --glass-highlight: rgba(255, 255, 255, 0.03);
+      }
+
       body {
-        font-family: 'Inter', sans-serif;
+        font-family: 'Outfit', sans-serif;
+        background-color: #020617;
+        overflow-x: hidden;
+        color: #e2e8f0;
       }
       
       .font-mono {
-        font-family: 'Fira Code', monospace;
+        font-family: 'JetBrains Mono', monospace;
       }
 
-      /* Custom animation for the preview pane */
-      @keyframes fadeIn {
-        from { opacity: 0; transform: scale(0.98) translateY(10px); }
-        to { opacity: 1; transform: scale(1) translateY(0); }
+      /* Advanced Liquid Background */
+      .blob-cont {
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        overflow: hidden;
+        pointer-events: none;
+        background: #020617;
       }
-      .animate-fade-in {
-        animation: fadeIn 0.4s ease-out forwards;
+      
+      .blob {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(80px);
+        opacity: 0.5;
+        animation: float-blob 25s infinite alternate cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      
+      .blob-1 { top: -10%; left: -10%; width: 50vw; height: 50vw; background: #4c1d95; animation-delay: 0s; }
+      .blob-2 { bottom: -10%; right: -10%; width: 60vw; height: 60vw; background: #0ea5e9; animation-delay: -5s; animation-direction: alternate-reverse; }
+      .blob-3 { top: 40%; left: 40%; width: 40vw; height: 40vw; background: #db2777; animation-delay: -12s; opacity: 0.3; }
+
+      @keyframes float-blob {
+        0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+        33% { transform: translate(5%, 10%) scale(1.1) rotate(10deg); }
+        66% { transform: translate(-5%, 5%) scale(0.9) rotate(-5deg); }
+        100% { transform: translate(0, 0) scale(1) rotate(0deg); }
       }
 
-      /* Custom animation for initial load */
-      @keyframes fadeInUp {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      .animate-fade-in-up {
-        animation: fadeInUp 0.6s ease-out forwards;
+      /* Noise Texture Overlay */
+      .noise-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        opacity: 0.03;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='1'/%3E%3C/svg%3E");
       }
 
-      /* Checkerboard background for transparency visualization */
+      /* Premium Glassmorphism */
+      .glass-panel {
+        background: var(--glass-bg);
+        backdrop-filter: blur(24px) saturate(180%);
+        -webkit-backdrop-filter: blur(24px) saturate(180%);
+        border: 1px solid var(--glass-border);
+        box-shadow: 
+          0 4px 30px rgba(0, 0, 0, 0.1),
+          inset 0 0 0 1px var(--glass-highlight);
+      }
+      
+      .glass-input {
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(12px);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .glass-input:focus {
+        background: rgba(0, 0, 0, 0.3);
+        border-color: rgba(56, 189, 248, 0.3);
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.1);
+      }
+
+      .glass-button {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
+        border: 1px solid var(--glass-border);
+        backdrop-filter: blur(10px);
+        position: relative;
+        overflow: hidden;
+        transition: all 0.3s ease;
+      }
+      .glass-button::before {
+        content: '';
+        position: absolute;
+        top: 0; left: -100%; width: 100%; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+        transition: 0.5s;
+      }
+      .glass-button:hover::before {
+        left: 100%;
+      }
+      .glass-button:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+        transform: translateY(-2px);
+        box-shadow: 0 10px 30px -10px rgba(56, 189, 248, 0.3);
+      }
+
+      /* Animations */
+      .animate-fade-in { animation: fadeIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+      .animate-fade-in-up { animation: fadeInUp 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+      .animate-pulse-slow { animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
       .checkerboard-bg {
-        background-color: #1e293b; /* bg-slate-800 */
+        background-color: rgba(0, 0, 0, 0.2);
         background-image: 
-          linear-gradient(45deg, rgba(255,255,255,0.05) 25%, transparent 25%), 
-          linear-gradient(-45deg, rgba(255,255,255,0.05) 25%, transparent 25%), 
-          linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.05) 75%), 
-          linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.05) 75%);
-        background-size: 20px 20px;
-        background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+          linear-gradient(45deg, rgba(255,255,255,0.02) 25%, transparent 25%), 
+          linear-gradient(-45deg, rgba(255,255,255,0.02) 25%, transparent 25%), 
+          linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.02) 75%), 
+          linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.02) 75%);
+        background-size: 24px 24px;
+        background-position: 0 0, 0 12px, 12px -12px, -12px 0px;
       }
 
-      /* Custom scrollbar for a modern look */
-      ::-webkit-scrollbar {
-        width: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background-color: rgba(100, 116, 139, 0.5); /* slate-500/50 */
-        border-radius: 4px;
-        border: 2px solid transparent;
-        background-clip: content-box;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background-color: rgba(100, 116, 139, 0.8); /* slate-500/80 */
-      }
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
     </style>
   <script type="importmap">
 {
@@ -75,8 +150,14 @@
 }
 </script>
 </head>
-  <body class="bg-slate-900">
-    <div id="root"></div>
+  <body class="h-screen w-screen overflow-hidden antialiased selection:bg-sky-500/30 selection:text-white">
+    <div class="blob-cont">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+    <div class="noise-overlay"></div>
+    <div id="root" class="relative h-full w-full"></div>
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>
