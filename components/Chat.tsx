@@ -28,6 +28,12 @@ interface ChatProps {
   initialCode: string;
 }
 
+const API_KEYS = [
+  "AIzaSyCNa9wXjw3y73NpW1bmTq_fo9WITIe1VEo",
+  "AIzaSyDtUpEnn34E64_8kcpapeTHzNVfzvETJ6c",
+  "AIzaSyDFtXm_9m-3MqKDfeoNQQXSRLNZygswvgs"
+];
+
 const systemInstruction = `You are a visionary, artistic AI assistant running on Gemini 3 Pro. You specialize in Scalable Vector Graphics (SVG). 
 
 **Style Guide:**
@@ -70,8 +76,10 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
 
   const chat = useMemo<GeminiChat | null>(() => {
     try {
-      if (!process.env.API_KEY) throw new Error("API key is missing.");
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // Randomly select one of the provided API keys
+      const apiKey = API_KEYS[Math.floor(Math.random() * API_KEYS.length)];
+      
+      const ai = new GoogleGenAI({ apiKey });
       // Using gemini-3-pro-preview with thinking budget as requested
       return ai.chats.create({ 
         model: 'gemini-3-pro-preview', 
