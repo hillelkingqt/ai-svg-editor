@@ -6,6 +6,7 @@ import { SendIcon } from './icons/SendIcon';
 import { AiIcon } from './icons/AiIcon';
 import { PaperclipIcon } from './icons/PaperclipIcon';
 import { CheckIcon } from './icons/CheckIcon';
+import { CodeIcon } from './icons/CodeIcon';
 
 // --- Types ---
 
@@ -23,6 +24,7 @@ interface Message {
     args: any;
     status: 'calling' | 'success' | 'error';
   };
+  isStreaming?: boolean;
 }
 
 interface ChatProps {
@@ -89,23 +91,76 @@ const isHebrew = (text: string) => {
   return /[\u0590-\u05FF]/.test(text);
 };
 
+// Artifact Component to replace raw code blocks
+const CodeArtifact: React.FC<{ isComplete: boolean }> = ({ isComplete }) => (
+    <div className="my-3 mx-1 bg-black/40 border border-white/10 rounded-xl overflow-hidden shadow-lg select-none group">
+        <div className="flex items-center justify-between p-3 bg-white/5 border-b border-white/5">
+            <div className="flex items-center gap-2.5">
+                <div className={`p-1.5 rounded-lg ${isComplete ? 'bg-emerald-500/20' : 'bg-sky-500/20'}`}>
+                   {isComplete ? <CheckIcon className="w-3.5 h-3.5 text-emerald-400" /> : <CodeIcon className="w-3.5 h-3.5 text-sky-400" />}
+                </div>
+                <div className="flex flex-col">
+                    <span className="text-xs font-bold text-slate-200 tracking-wide">
+                        {isComplete ? 'Artwork Generated' : 'Generating Artwork...'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono">SVG Vector Graphics</span>
+                </div>
+            </div>
+            {!isComplete && (
+                <div className="flex gap-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:-0.3s]"></div>
+                    <div className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:-0.15s]"></div>
+                    <div className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce"></div>
+                </div>
+            )}
+        </div>
+        <div className="px-4 py-2 bg-black/20">
+            <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-500/50"></span>
+                Canvas updated automatically
+            </div>
+        </div>
+        <div className="h-0.5 w-full bg-white/5">
+            {!isComplete && (
+                 <div className="h-full bg-sky-500/50 w-1/3 animate-[shimmer_1.5s_infinite_linear] bg-gradient-to-r from-transparent via-sky-400 to-transparent transform -translate-x-full" style={{ width: '100%', transformOrigin: '0% 50%' }}></div>
+            )}
+        </div>
+        <style>{`
+            @keyframes shimmer {
+                0% { transform: translateX(-100%); }
+                100% { transform: translateX(100%); }
+            }
+        `}</style>
+    </div>
+);
+
 // Simple Markdown Renderer Component
 const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
   if (!text) return null;
 
   // Split by code blocks first to avoid formatting inside code
-  const parts = text.split(/(```[\s\S]*?```)/g);
+  const parts = text.split(/(```[\s\S]*?```|```[\s\S]*$)/g);
 
   return (
     <span className={isHebrew(text) ? "text-right" : "text-left"}>
       {parts.map((part, index) => {
+        // Check if this is a code block
         if (part.startsWith('```')) {
-          const content = part.replace(/^```\w*\n?|```$/g, '');
-          return (
-            <code key={index} className="block my-2 p-3 bg-black/30 rounded-lg text-xs font-mono whitespace-pre-wrap text-sky-300 border border-white/10">
-              {content}
-            </code>
-          );
+            const isSvg = part.includes('xml') || part.includes('<svg');
+            
+            // If it's an SVG block, render the Artifact UI instead of code
+            if (isSvg) {
+                const isComplete = part.endsWith('```');
+                return <CodeArtifact key={index} isComplete={isComplete} />;
+            }
+
+            // Normal code blocks
+            const content = part.replace(/^```\w*\n?|```$/g, '');
+            return (
+                <code key={index} className="block my-2 p-3 bg-black/30 rounded-lg text-xs font-mono whitespace-pre-wrap text-sky-300 border border-white/10">
+                {content}
+                </code>
+            );
         }
 
         // Process bold, italics, etc.
@@ -204,7 +259,10 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
         config: { 
             systemInstruction,
             tools,
-            thinkingConfig: { thinkingBudget: 4096 } // Enable thinking budget
+            thinkingConfig: { 
+              includeThoughts: true, // Enable thought summaries
+              thinkingBudget: 4096 
+            }
         }
       });
     } catch (e) {
@@ -273,7 +331,6 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
       const parts: (string | Part)[] = [];
       
       // Inject correct context
-      // FIX: Ensure initialCode is passed correctly
       const prompt = `Current SVG Code:
 \`\`\`xml
 ${initialCode}
@@ -357,14 +414,14 @@ Task: ${input}`;
 
          for (const part of candidateParts) {
              // EXTRACT THINKING PROCESS
-             // Supports both 'thought' flag (boolean) or 'thought' property containing text
-             // @ts-ignore - Handle experimental API properties
-             const isThinking = part.thought === true;
+             // Supports 'thought' property for Gemini 3
              // @ts-ignore
-             const thoughtText = part.thought && typeof part.thought === 'string' ? part.thought : null;
-
-             if (isThinking || thoughtText) {
-                 const textToAppend = thoughtText || part.text;
+             const isThought = part.thought === true || typeof part.thought === 'string';
+             
+             if (isThought) {
+                 // If part.thought is a string (some versions), use it. If it's true, use part.text.
+                 // @ts-ignore
+                 const textToAppend = typeof part.thought === 'string' ? part.thought : part.text;
                  if (textToAppend) {
                     thoughtAccumulator += textToAppend;
                     contentUpdated = true;
@@ -376,10 +433,8 @@ Task: ${input}`;
                  contentUpdated = true;
                  
                  // LIVE SVG EXTRACTION
-                 // As soon as we have new text, try to extract SVG and update
                  const potentialSvg = extractSvgFromText(aiTextAccumulator);
                  if (potentialSvg && potentialSvg.length > 20) {
-                     // Basic sanity check to prevent empty updates
                      onSvgCodeChange(potentialSvg);
                  }
              }
@@ -392,18 +447,24 @@ Task: ${input}`;
                      text: aiTextAccumulator, 
                      thought: thoughtAccumulator,
                      sender: 'ai', 
-                     type: 'text' 
+                     type: 'text',
+                     isStreaming: true
                  }]);
                  hasAddedAiMessage = true;
              } else {
                  setMessages(prev => prev.map(m => 
                      m.id === currentAiMessageId 
-                     ? { ...m, text: aiTextAccumulator, thought: thoughtAccumulator } 
+                     ? { ...m, text: aiTextAccumulator, thought: thoughtAccumulator, isStreaming: true } 
                      : m
                  ));
              }
          }
       }
+      
+      // Mark streaming as complete for the last message
+      setMessages(prev => prev.map(m => 
+         m.id === currentAiMessageId ? { ...m, isStreaming: false } : m
+      ));
 
     } catch (e) {
         console.error(e);
