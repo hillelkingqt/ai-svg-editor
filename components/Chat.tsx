@@ -135,7 +135,7 @@ const CodeArtifact: React.FC<{ isComplete: boolean }> = ({ isComplete }) => (
 );
 
 // Simple Markdown Renderer Component
-const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
+const SimpleMarkdown: React.FC<{ text: string; isThought?: boolean }> = ({ text, isThought = false }) => {
   if (!text) return null;
 
   // Split by code blocks first to avoid formatting inside code
@@ -149,7 +149,7 @@ const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
             const isSvg = part.includes('xml') || part.includes('<svg');
             
             // If it's an SVG block, render the Artifact UI instead of code
-            if (isSvg) {
+            if (isSvg && !isThought) {
                 const isComplete = part.endsWith('```');
                 return <CodeArtifact key={index} isComplete={isComplete} />;
             }
@@ -157,7 +157,7 @@ const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
             // Normal code blocks
             const content = part.replace(/^```\w*\n?|```$/g, '');
             return (
-                <code key={index} className="block my-2 p-3 bg-black/30 rounded-lg text-xs font-mono whitespace-pre-wrap text-sky-300 border border-white/10">
+                <code key={index} className={`block my-2 p-3 rounded-lg text-xs font-mono whitespace-pre-wrap border ${isThought ? 'bg-black/20 text-indigo-200 border-indigo-500/20' : 'bg-black/30 text-sky-300 border-white/10'}`}>
                 {content}
                 </code>
             );
@@ -168,7 +168,7 @@ const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
         return lines.map((line, lineIndex) => {
            // Header detection (#)
            if (line.trim().startsWith('# ')) {
-               return <h3 key={`${index}-${lineIndex}`} className="text-lg font-bold my-2 text-white">{line.replace('# ', '')}</h3>
+               return <h3 key={`${index}-${lineIndex}`} className={`text-lg font-bold my-2 ${isThought ? 'text-indigo-100' : 'text-white'}`}>{line.replace('# ', '')}</h3>
            }
            
            // Bold detection (**)
@@ -178,7 +178,7 @@ const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
                 <div className="min-h-[1.2em]">
                     {segments.map((seg, segIndex) => {
                         if (seg.startsWith('**') && seg.endsWith('**')) {
-                            return <strong key={segIndex} className="text-white font-semibold">{seg.slice(2, -2)}</strong>;
+                            return <strong key={segIndex} className={isThought ? 'text-indigo-200 font-bold' : 'text-white font-semibold'}>{seg.slice(2, -2)}</strong>;
                         }
                         return seg;
                     })}
@@ -548,20 +548,26 @@ Task: ${input}`;
 
                             {/* Thought / Reasoning Bubble (Only for AI) */}
                             {message.thought && message.sender === 'ai' && (
-                                <div className="mb-3 w-full animate-fade-in group">
-                                    <div className="bg-[#0f111a] border border-indigo-500/20 rounded-xl overflow-hidden shadow-lg relative">
-                                         <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-indigo-500 to-violet-600"></div>
-                                        <div className="p-3 flex items-center gap-2 border-b border-indigo-500/10 bg-indigo-500/5">
-                                            <div className="relative flex h-2 w-2">
+                                <div className="mb-4 w-full animate-fade-in group">
+                                    <div className="relative overflow-hidden rounded-2xl border border-indigo-500/20 bg-slate-950/40 backdrop-blur-md shadow-[0_0_40px_-10px_rgba(79,70,229,0.15)] transition-all duration-500">
+                                         
+                                        {/* Liquid Gradient Animation Background */}
+                                        <div className="absolute -inset-[100%] bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-indigo-500/10 animate-[spin_10s_linear_infinite] opacity-50 blur-3xl -z-10"></div>
+                                        
+                                        {/* Header */}
+                                        <div className="flex items-center gap-2.5 px-4 py-3 bg-white/5 border-b border-white/5">
+                                            <div className="relative flex h-2.5 w-2.5">
                                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                                              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-gradient-to-r from-indigo-400 to-purple-400"></span>
                                             </div>
-                                            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest font-mono">Process of Thought</span>
+                                            <span className="text-[11px] font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-200 to-purple-200 uppercase tracking-widest font-mono">Process of Thought</span>
                                         </div>
-                                        <div className="p-4 max-h-[300px] overflow-y-auto custom-scrollbar bg-[#0a0a0a]">
-                                            <p className="text-xs text-indigo-200/70 font-mono leading-relaxed whitespace-pre-wrap font-light">
-                                                {message.thought}
-                                            </p>
+                                        
+                                        {/* Content */}
+                                        <div className="p-4 max-h-[350px] overflow-y-auto custom-scrollbar">
+                                            <div className="text-sm text-indigo-200/90 leading-relaxed font-light">
+                                                <SimpleMarkdown text={message.thought} isThought={true} />
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
