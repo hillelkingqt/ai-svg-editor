@@ -43,37 +43,44 @@ const API_KEYS = [
 
 const updateCanvasTool: FunctionDeclaration = {
   name: "update_canvas",
-  description: "Updates the SVG canvas with new code and a title. Use this WHENEVER the user asks to draw, modify, or change the graphic.",
+  description: "Updates the SVG canvas title and metadata. The ACTUAL SVG code should be written in the text response for live rendering.",
   parameters: {
     type: Type.OBJECT,
     properties: {
-      svg_code: {
-        type: Type.STRING,
-        description: "The complete, valid SVG XML code. Must start with <svg and end with </svg>."
-      },
       title: {
         type: Type.STRING,
-        description: "A short, creative title for the artwork (e.g., 'Neon Cyberpunk City')."
+        description: "A short, creative title for the artwork."
       },
       description: {
         type: Type.STRING,
-        description: "A very brief summary of what was changed or created (e.g., 'Added a glowing gradient background')."
+        description: "A very brief summary of what was changed."
       }
     },
-    required: ["svg_code", "title"]
+    required: ["title"]
   }
 };
 
 const tools: Tool[] = [{ functionDeclarations: [updateCanvasTool] }];
 
+// Updated system instruction to force code output in text for live streaming
 const systemInstruction = `You are a world-class SVG Generative Artist running on Gemini 3 Pro.
 Your goal is to create stunning, efficient, and creative SVGs based on user requests.
 
+**CRITICAL PROTOCOL FOR DRAWING:**
+1.  **Thinking:** First, plan your design in the thought block.
+2.  **Live Coding:** YOU MUST write the full SVG code explicitly in your text response inside a Markdown code block like this:
+    \`\`\`xml
+    <svg ...>
+      ...
+    </svg>
+    \`\`\`
+    This allows the user to see the image being drawn line-by-line in real-time.
+3.  **Finalize:** After writing the code, call the \`update_canvas\` tool to set the title.
+
 **Directives:**
-1.  **Use the Tool:** When the user asks to create or modify art, YOU MUST use the \`update_canvas\` tool. Do not just write the code in text.
-2.  **Hebrew Support:** If the user speaks Hebrew, reply in Hebrew.
-3.  **Style:** Be concise, professional, and artistic. Use Markdown for text formatting.
-4.  **Thinking:** Before calling the tool, you might want to briefly explain your plan if it's complex.`;
+-   Always start the SVG with \`<svg\` and ensure it has \`xmlns="http://www.w3.org/2000/svg"\`.
+-   If the user speaks Hebrew, reply in Hebrew.
+-   Be concise, professional, and artistic.`;
 
 // --- Helpers ---
 
@@ -138,6 +145,29 @@ const fileToGenerativePart = async (file: File): Promise<Part> => {
     return {
       inlineData: { data: await base64EncodedDataPromise, mimeType: file.type },
     };
+};
+
+// Helper to extract SVG from streaming text
+const extractSvgFromText = (text: string): string | null => {
+    // Look for <svg ... > ... (possibly incomplete)
+    // We try to find the last opening <svg tag and capture everything after it
+    const match = text.match(/<svg[\s\S]*/i);
+    if (!match) return null;
+    
+    let svgContent = match[0];
+    
+    // Clean up markdown code block start if present (unlikely due to regex, but safe to check)
+    svgContent = svgContent.replace(/^```xml\n/, '').replace(/^```\n/, '');
+
+    // If it's inside a code block that hasn't closed, it might have trailing chars, but usually browser parsers ignore text after </svg> 
+    // strictly speaking we want to capture until </svg> if it exists, or end of string
+    const closingMatch = svgContent.match(/<\/svg>/i);
+    if (closingMatch) {
+        const endIndex = closingMatch.index! + 6;
+        svgContent = svgContent.substring(0, endIndex);
+    }
+
+    return svgContent;
 };
 
 // --- Component ---
@@ -243,6 +273,7 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
       const parts: (string | Part)[] = [];
       
       // Inject correct context
+      // FIX: Ensure initialCode is passed correctly
       const prompt = `Current SVG Code:
 \`\`\`xml
 ${initialCode}
@@ -265,7 +296,7 @@ Task: ${input}`;
 
       for await (const chunk of responseStream) {
          // Stop the initial "spinner" thinking state once we get ANY content
-         if (setIsThinking) setIsThinking(false);
+         setIsThinking(false);
 
          // 1. Handle Function Calls
          const functionCalls = chunk.functionCalls;
@@ -279,16 +310,15 @@ Task: ${input}`;
                         sender: 'system',
                         type: 'tool_log',
                         toolInfo: {
-                            name: 'Generating Artwork',
+                            name: 'Updating Metadata',
                             args: call.args,
                             status: 'calling'
                         }
                     }]);
 
                     try {
-                        const { svg_code, title } = call.args as any;
+                        const { title } = call.args as any;
                         // EXECUTE THE TOOL
-                        if (svg_code) onSvgCodeChange(svg_code);
                         if (title) onSvgTitleChange(title);
 
                         // Update tool log to success
@@ -300,12 +330,13 @@ Task: ${input}`;
 
                         // Send confirmation back to model (Required for multi-turn tool use)
                         await chat.sendMessage({
-                            part: {
+                            message: [{
                                 functionResponse: {
                                     name: 'update_canvas',
-                                    response: { result: 'success', message: 'Canvas updated successfully displayed to user.' }
+                                    response: { result: 'success', message: 'Title updated.' },
+                                    id: call.id
                                 }
-                            }
+                            }]
                         });
 
                     } catch (err) {
@@ -321,21 +352,36 @@ Task: ${input}`;
          }
 
          // 2. Handle Text & Thinking Content
-         // We iterate over parts to distinguish between thoughts and final text
          const candidateParts = chunk.candidates?.[0]?.content?.parts || [];
          let contentUpdated = false;
 
          for (const part of candidateParts) {
-             // Check for thought content
-             // @ts-ignore - 'thought' property availability depends on model/sdk version
-             if (part.thought) {
-                 thoughtAccumulator += part.text;
-                 contentUpdated = true;
+             // EXTRACT THINKING PROCESS
+             // Supports both 'thought' flag (boolean) or 'thought' property containing text
+             // @ts-ignore - Handle experimental API properties
+             const isThinking = part.thought === true;
+             // @ts-ignore
+             const thoughtText = part.thought && typeof part.thought === 'string' ? part.thought : null;
+
+             if (isThinking || thoughtText) {
+                 const textToAppend = thoughtText || part.text;
+                 if (textToAppend) {
+                    thoughtAccumulator += textToAppend;
+                    contentUpdated = true;
+                 }
              } 
              // Regular text content
              else if (part.text) {
                  aiTextAccumulator += part.text;
                  contentUpdated = true;
+                 
+                 // LIVE SVG EXTRACTION
+                 // As soon as we have new text, try to extract SVG and update
+                 const potentialSvg = extractSvgFromText(aiTextAccumulator);
+                 if (potentialSvg && potentialSvg.length > 20) {
+                     // Basic sanity check to prevent empty updates
+                     onSvgCodeChange(potentialSvg);
+                 }
              }
          }
 
@@ -421,7 +467,7 @@ Task: ${input}`;
                                 <div className="flex-1 min-w-0">
                                     <p className="text-xs font-bold text-sky-300 uppercase tracking-wider">{message.toolInfo.name}</p>
                                     <p className="text-xs text-slate-400 truncate font-mono mt-0.5">
-                                        {message.toolInfo.args?.title || 'Updating canvas...'}
+                                        {message.toolInfo.args?.title || 'Updating...'}
                                     </p>
                                 </div>
                              </div>
@@ -441,15 +487,21 @@ Task: ${input}`;
 
                             {/* Thought / Reasoning Bubble (Only for AI) */}
                             {message.thought && message.sender === 'ai' && (
-                                <div className="mb-2 w-full animate-fade-in">
-                                    <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl rounded-tl-none p-3 shadow-inner">
-                                        <div className="flex items-center gap-2 mb-1.5 opacity-80">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></div>
-                                            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Reasoning Process</span>
+                                <div className="mb-3 w-full animate-fade-in group">
+                                    <div className="bg-[#0f111a] border border-indigo-500/20 rounded-xl overflow-hidden shadow-lg relative">
+                                         <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-indigo-500 to-violet-600"></div>
+                                        <div className="p-3 flex items-center gap-2 border-b border-indigo-500/10 bg-indigo-500/5">
+                                            <div className="relative flex h-2 w-2">
+                                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                                            </div>
+                                            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest font-mono">Process of Thought</span>
                                         </div>
-                                        <p className="text-xs text-indigo-200/80 font-mono leading-relaxed whitespace-pre-wrap">
-                                            {message.thought}
-                                        </p>
+                                        <div className="p-4 max-h-[300px] overflow-y-auto custom-scrollbar bg-[#0a0a0a]">
+                                            <p className="text-xs text-indigo-200/70 font-mono leading-relaxed whitespace-pre-wrap font-light">
+                                                {message.thought}
+                                            </p>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -481,7 +533,7 @@ Task: ${input}`;
               })}
               
               {/* Initial Loading Indicator (Before first chunk) */}
-              {isThinking && (
+              {isThinking && !messages[messages.length-1]?.thought && (
                  <div className="flex justify-start w-full animate-fade-in">
                     <div className="bg-[#1e293b] border border-white/5 rounded-2xl rounded-tl-none px-5 py-4 flex items-center gap-3 shadow-lg">
                         <div className="relative w-4 h-4">
