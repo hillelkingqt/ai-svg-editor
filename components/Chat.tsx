@@ -1,22 +1,27 @@
+
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { GoogleGenAI, Chat as GeminiChat, Part } from "@google/genai";
+import { GoogleGenAI, Chat as GeminiChat, Part, FunctionDeclaration, Type, Tool } from "@google/genai";
 import { CloseIcon } from './icons/CloseIcon';
 import { SendIcon } from './icons/SendIcon';
 import { AiIcon } from './icons/AiIcon';
 import { PaperclipIcon } from './icons/PaperclipIcon';
 import { CheckIcon } from './icons/CheckIcon';
 
-type MessageType = 'text' | 'creation';
+// --- Types ---
+
+type MessageType = 'text' | 'tool_log';
 
 interface Message {
   id: number;
-  sender: 'user' | 'ai';
+  sender: 'user' | 'ai' | 'system';
   text?: string;
+  thought?: string; // Added field for reasoning process
   image?: string; 
   type: MessageType;
-  creation?: {
+  toolInfo?: {
     name: string;
-    status: 'creating' | 'created';
+    args: any;
+    status: 'calling' | 'success' | 'error';
   };
 }
 
@@ -28,25 +33,101 @@ interface ChatProps {
   initialCode: string;
 }
 
+// --- Configuration ---
+
 const API_KEYS = [
   "AIzaSyCNa9wXjw3y73NpW1bmTq_fo9WITIe1VEo",
   "AIzaSyDtUpEnn34E64_8kcpapeTHzNVfzvETJ6c",
   "AIzaSyDFtXm_9m-3MqKDfeoNQQXSRLNZygswvgs"
 ];
 
-const systemInstruction = `You are a visionary, artistic AI assistant running on Gemini 3 Pro. You specialize in Scalable Vector Graphics (SVG). 
+const updateCanvasTool: FunctionDeclaration = {
+  name: "update_canvas",
+  description: "Updates the SVG canvas with new code and a title. Use this WHENEVER the user asks to draw, modify, or change the graphic.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      svg_code: {
+        type: Type.STRING,
+        description: "The complete, valid SVG XML code. Must start with <svg and end with </svg>."
+      },
+      title: {
+        type: Type.STRING,
+        description: "A short, creative title for the artwork (e.g., 'Neon Cyberpunk City')."
+      },
+      description: {
+        type: Type.STRING,
+        description: "A very brief summary of what was changed or created (e.g., 'Added a glowing gradient background')."
+      }
+    },
+    required: ["svg_code", "title"]
+  }
+};
 
-**Style Guide:**
-- Your tone is sophisticated, creative, and enthusiastic.
-- You think deeply before you draw.
+const tools: Tool[] = [{ functionDeclarations: [updateCanvasTool] }];
 
-**Strict Protocol for Drawing:**
-When asked to draw or modify an SVG:
-1.  **Thinking Phase:** First, you MUST briefly explain your design choices and reasoning.
-2.  **Naming:** Write \`NAME: \` followed by a title.
-3.  **Code:** Write the raw SVG code on a new line (start with <svg, no markdown).
-4.  **Completion:** Write \`STATUS: DONE\` after the svg tag.
-5.  **Closing:** A short elegant closing remark.`;
+const systemInstruction = `You are a world-class SVG Generative Artist running on Gemini 3 Pro.
+Your goal is to create stunning, efficient, and creative SVGs based on user requests.
+
+**Directives:**
+1.  **Use the Tool:** When the user asks to create or modify art, YOU MUST use the \`update_canvas\` tool. Do not just write the code in text.
+2.  **Hebrew Support:** If the user speaks Hebrew, reply in Hebrew.
+3.  **Style:** Be concise, professional, and artistic. Use Markdown for text formatting.
+4.  **Thinking:** Before calling the tool, you might want to briefly explain your plan if it's complex.`;
+
+// --- Helpers ---
+
+// Simple Hebrew detection
+const isHebrew = (text: string) => {
+  return /[\u0590-\u05FF]/.test(text);
+};
+
+// Simple Markdown Renderer Component
+const SimpleMarkdown: React.FC<{ text: string }> = ({ text }) => {
+  if (!text) return null;
+
+  // Split by code blocks first to avoid formatting inside code
+  const parts = text.split(/(```[\s\S]*?```)/g);
+
+  return (
+    <span className={isHebrew(text) ? "text-right" : "text-left"}>
+      {parts.map((part, index) => {
+        if (part.startsWith('```')) {
+          const content = part.replace(/^```\w*\n?|```$/g, '');
+          return (
+            <code key={index} className="block my-2 p-3 bg-black/30 rounded-lg text-xs font-mono whitespace-pre-wrap text-sky-300 border border-white/10">
+              {content}
+            </code>
+          );
+        }
+
+        // Process bold, italics, etc.
+        const lines = part.split('\n');
+        return lines.map((line, lineIndex) => {
+           // Header detection (#)
+           if (line.trim().startsWith('# ')) {
+               return <h3 key={`${index}-${lineIndex}`} className="text-lg font-bold my-2 text-white">{line.replace('# ', '')}</h3>
+           }
+           
+           // Bold detection (**)
+           const segments = line.split(/(\*\*.*?\*\*)/g);
+           return (
+             <React.Fragment key={`${index}-${lineIndex}`}>
+                <div className="min-h-[1.2em]">
+                    {segments.map((seg, segIndex) => {
+                        if (seg.startsWith('**') && seg.endsWith('**')) {
+                            return <strong key={segIndex} className="text-white font-semibold">{seg.slice(2, -2)}</strong>;
+                        }
+                        return seg;
+                    })}
+                </div>
+             </React.Fragment>
+           );
+        });
+      })}
+    </span>
+  );
+};
 
 const fileToGenerativePart = async (file: File): Promise<Part> => {
     const base64EncodedDataPromise = new Promise<string>((resolve) => {
@@ -59,13 +140,20 @@ const fileToGenerativePart = async (file: File): Promise<Part> => {
     };
 };
 
+// --- Component ---
+
 const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitleChange, initialCode }) => {
   const [messages, setMessages] = useState<Message[]>([
-    { id: 1, text: "Greetings. I am Gemini 3 Pro. I can visualize your imagination. What shall we create together today?", sender: 'ai', type: 'text' }
+    { 
+        id: 1, 
+        text: "Ready to design. Describe what you want to see.", 
+        sender: 'ai', 
+        type: 'text' 
+    }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [thinkingState, setThinkingState] = useState<'idle' | 'thinking' | 'generating'>('idle');
+  const [isThinking, setIsThinking] = useState(false); // Visual thinking state (spinner)
   const [error, setError] = useState<string | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -74,18 +162,19 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Initialize Chat Client
   const chat = useMemo<GeminiChat | null>(() => {
     try {
-      // Randomly select one of the provided API keys
+      // 1. Random API Key Rotation
       const apiKey = API_KEYS[Math.floor(Math.random() * API_KEYS.length)];
       
       const ai = new GoogleGenAI({ apiKey });
-      // Using gemini-3-pro-preview with thinking budget as requested
       return ai.chats.create({ 
         model: 'gemini-3-pro-preview', 
         config: { 
             systemInstruction,
-            thinkingConfig: { thinkingBudget: 16384 } 
+            tools,
+            thinkingConfig: { thinkingBudget: 4096 } // Enable thinking budget
         }
       });
     } catch (e) {
@@ -94,16 +183,17 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
     }
   }, []);
 
+  // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading, thinkingState]);
+  }, [messages, isLoading, isThinking]);
   
+  // Auto focus
   useEffect(() => {
-    if (isOpen) {
-        setTimeout(() => inputRef.current?.focus(), 300);
-    }
+    if (isOpen) setTimeout(() => inputRef.current?.focus(), 300);
   }, [isOpen]);
 
+  // Image preview
   useEffect(() => {
       if (attachedFile) {
         const objectUrl = URL.createObjectURL(attachedFile);
@@ -140,16 +230,27 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
     e.preventDefault();
     if ((!input.trim() && !attachedFile) || isLoading || !chat) return;
 
+    // 1. Add User Message
     const userMessage: Message = { id: Date.now(), text: input, sender: 'user', type: 'text', image: previewUrl ?? undefined };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setAttachedFile(null);
     setIsLoading(true);
-    setThinkingState('thinking');
+    setIsThinking(true); 
     setError(null);
 
     try {
-      const parts: (string | Part)[] = [`Current SVG Code Context:\n\`\`\`svg\n${initialCode}\n\`\`\`\n\nRequest: ${input}`];
+      const parts: (string | Part)[] = [];
+      
+      // Inject correct context
+      const prompt = `Current SVG Code:
+\`\`\`xml
+${initialCode}
+\`\`\`
+Task: ${input}`;
+      
+      parts.push(prompt);
+      
       if (attachedFile) {
         const imagePart = await fileToGenerativePart(attachedFile);
         parts.push(imagePart);
@@ -157,251 +258,302 @@ const Chat: React.FC<ChatProps> = ({ isOpen, onClose, onSvgCodeChange, onSvgTitl
       
       const responseStream = await chat.sendMessageStream({ message: parts });
       
-      let buffer = '';
-      let state: 'reasoning' | 'finding_name' | 'streaming_svg' | 'streaming_follow_up' = 'reasoning';
-      let creationMessageId: number | null = null;
-      let followUpMessageId: number | null = null;
-      let currentSvgCode = '';
-      let textResponseId = Date.now() + 10;
-
-      // Initial Placeholder for text response
-      setMessages(prev => [...prev, { id: textResponseId, text: '', sender: 'ai', type: 'text' }]);
+      let currentAiMessageId = Date.now() + 10;
+      let hasAddedAiMessage = false;
+      let aiTextAccumulator = '';
+      let thoughtAccumulator = '';
 
       for await (const chunk of responseStream) {
-        // Since we can't easily distinguish 'thought' from 'text' in the stream without complex parsing
-        // (as the API mixes them or hides thoughts), we treat early text as reasoning/intro.
-        const chunkText = chunk.text || '';
-        buffer += chunkText;
+         // Stop the initial "spinner" thinking state once we get ANY content
+         if (setIsThinking) setIsThinking(false);
 
-        if (state === 'reasoning') {
-            // Check if we hit the name protocol
-            const nameMatch = buffer.match(/NAME: (.*)\n/);
-            if (nameMatch) {
-                setThinkingState('generating');
-                const name = nameMatch[1].trim();
-                onSvgTitleChange(name);
-                
-                // Finalize the reasoning text in the message
-                const reasoningText = buffer.substring(0, nameMatch.index).trim();
-                setMessages(prev => prev.map(msg => 
-                    msg.id === textResponseId ? { ...msg, text: reasoningText } : msg
-                ));
+         // 1. Handle Function Calls
+         const functionCalls = chunk.functionCalls;
+         if (functionCalls && functionCalls.length > 0) {
+            for (const call of functionCalls) {
+                if (call.name === 'update_canvas') {
+                    // Log the tool usage in chat
+                    const toolMsgId = Date.now() + Math.random();
+                    setMessages(prev => [...prev, {
+                        id: toolMsgId,
+                        sender: 'system',
+                        type: 'tool_log',
+                        toolInfo: {
+                            name: 'Generating Artwork',
+                            args: call.args,
+                            status: 'calling'
+                        }
+                    }]);
 
-                creationMessageId = Date.now() + 20;
-                setMessages(prev => [...prev, {
-                    id: creationMessageId!,
-                    sender: 'ai',
-                    type: 'creation',
-                    creation: { name, status: 'creating' }
-                }]);
-                
-                buffer = buffer.substring(nameMatch.index! + nameMatch[0].length);
-                state = 'streaming_svg';
-                onSvgCodeChange(''); 
-                currentSvgCode = '';
-            } else {
-                // Stream reasoning/intro text
-                 setMessages(prev => prev.map(msg => 
-                    msg.id === textResponseId ? { ...msg, text: buffer } : msg
-                ));
+                    try {
+                        const { svg_code, title } = call.args as any;
+                        // EXECUTE THE TOOL
+                        if (svg_code) onSvgCodeChange(svg_code);
+                        if (title) onSvgTitleChange(title);
+
+                        // Update tool log to success
+                        setMessages(prev => prev.map(m => 
+                            m.id === toolMsgId && m.type === 'tool_log' 
+                            ? { ...m, toolInfo: { ...m.toolInfo!, status: 'success' } } 
+                            : m
+                        ));
+
+                        // Send confirmation back to model (Required for multi-turn tool use)
+                        await chat.sendMessage({
+                            part: {
+                                functionResponse: {
+                                    name: 'update_canvas',
+                                    response: { result: 'success', message: 'Canvas updated successfully displayed to user.' }
+                                }
+                            }
+                        });
+
+                    } catch (err) {
+                        console.error("Tool execution failed", err);
+                         setMessages(prev => prev.map(m => 
+                            m.id === toolMsgId && m.type === 'tool_log' 
+                            ? { ...m, toolInfo: { ...m.toolInfo!, status: 'error' } } 
+                            : m
+                        ));
+                    }
+                }
             }
-        }
-        
-        if (state === 'streaming_svg') {
-            const statusMatch = buffer.indexOf('STATUS: DONE');
-            if (statusMatch !== -1) {
-                const svgPart = buffer.substring(0, statusMatch);
-                currentSvgCode += svgPart;
-                onSvgCodeChange(currentSvgCode);
-                setMessages(prev => prev.map(msg => 
-                    msg.id === creationMessageId ? { ...msg, creation: { ...msg.creation!, status: 'created' } } : msg
-                ));
-                buffer = buffer.substring(statusMatch + 'STATUS: DONE'.length).trimStart();
-                state = 'streaming_follow_up';
-                followUpMessageId = Date.now() + 30;
-                setMessages(prev => [...prev, { id: followUpMessageId!, text: '', sender: 'ai', type: 'text' }]);
-            } else {
-                currentSvgCode += buffer;
-                onSvgCodeChange(currentSvgCode);
-                buffer = '';
-            }
-        }
+         }
 
-        if (state === 'streaming_follow_up') {
-             setMessages(prev => prev.map(msg => 
-                msg.id === followUpMessageId ? { ...msg, text: (msg.text || '') + chunkText } : msg
-            ));
-        }
+         // 2. Handle Text & Thinking Content
+         // We iterate over parts to distinguish between thoughts and final text
+         const candidateParts = chunk.candidates?.[0]?.content?.parts || [];
+         let contentUpdated = false;
+
+         for (const part of candidateParts) {
+             // Check for thought content
+             // @ts-ignore - 'thought' property availability depends on model/sdk version
+             if (part.thought) {
+                 thoughtAccumulator += part.text;
+                 contentUpdated = true;
+             } 
+             // Regular text content
+             else if (part.text) {
+                 aiTextAccumulator += part.text;
+                 contentUpdated = true;
+             }
+         }
+
+         if (contentUpdated) {
+             if (!hasAddedAiMessage) {
+                 setMessages(prev => [...prev, { 
+                     id: currentAiMessageId, 
+                     text: aiTextAccumulator, 
+                     thought: thoughtAccumulator,
+                     sender: 'ai', 
+                     type: 'text' 
+                 }]);
+                 hasAddedAiMessage = true;
+             } else {
+                 setMessages(prev => prev.map(m => 
+                     m.id === currentAiMessageId 
+                     ? { ...m, text: aiTextAccumulator, thought: thoughtAccumulator } 
+                     : m
+                 ));
+             }
+         }
       }
 
     } catch (e) {
-        const errorMessage = "I encountered an anomaly in the creative matrix. Please try again.";
+        console.error(e);
+        const errorMessage = "Connection interrupted. Please retry.";
         setError(errorMessage);
         setMessages(prev => [...prev, { id: Date.now(), text: errorMessage, sender: 'ai', type: 'text' }]);
     } finally {
         setIsLoading(false);
-        setThinkingState('idle');
+        setIsThinking(false);
     }
   };
-
-  const renderMessageContent = (message: Message) => {
-    if (message.type === 'creation' && message.creation) {
-      const { name, status } = message.creation;
-      const isCreating = status === 'creating';
-      return (
-        <div className={`p-4 rounded-2xl animate-fade-in-up glass-panel border-l-4 border-l-sky-500 overflow-hidden relative`}>
-          <div className="absolute inset-0 bg-gradient-to-r from-sky-500/10 to-violet-500/10"></div>
-          <div className="flex items-center gap-3 relative z-10">
-            {isCreating ? (
-              <div className="relative flex h-5 w-5">
-                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                 <span className="relative inline-flex rounded-full h-5 w-5 bg-sky-500"></span>
-              </div>
-            ) : (
-              <div className="bg-emerald-500/20 p-1.5 rounded-full border border-emerald-500/30">
-                  <CheckIcon className="w-4 h-4 text-emerald-400"/>
-              </div>
-            )}
-            <div>
-                 <p className="text-[10px] text-sky-300 uppercase tracking-widest font-bold mb-0.5">{isCreating ? 'GENERATING GRAPHICS' : 'RENDER COMPLETE'}</p>
-                 <p className="font-semibold text-white text-base">{name}</p>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return (
-       <div 
-          className={`p-4 rounded-2xl animate-fade-in-up shadow-xl backdrop-blur-md border ${
-              message.sender === 'user' 
-              ? 'bg-gradient-to-br from-violet-600/90 to-fuchsia-600/90 text-white border-white/10 rounded-br-none' 
-              : 'glass-panel text-slate-200 rounded-bl-none'
-          }`}
-          style={{ animationDelay: '50ms', animationFillMode: 'backwards' }}
-      >
-          <p className="text-sm leading-relaxed whitespace-pre-wrap font-light tracking-wide">{message.text || ' '}</p>
-      </div>
-    );
-  }
 
   return (
     <>
       <div 
-        className={`fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 transition-opacity duration-500 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity duration-500 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={onClose}
         aria-hidden="true"
       />
       <div 
-        className={`fixed top-0 left-0 bottom-0 z-50 w-full max-w-lg flex flex-col transition-transform duration-500 cubic-bezier(0.19, 1, 0.22, 1) ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed top-0 left-0 bottom-0 z-50 w-full max-w-[480px] flex flex-col transition-transform duration-500 cubic-bezier(0.19, 1, 0.22, 1) ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
         role="dialog"
         aria-modal="true"
         onPaste={handlePaste}
       >
-        <div className="flex-1 flex flex-col glass-panel m-3 sm:m-4 rounded-[2rem] overflow-hidden shadow-2xl shadow-black/50 border border-white/10 relative">
-            <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-white/5 to-transparent h-32"></div>
+        <div className="flex-1 flex flex-col bg-[#0f172a] sm:m-4 sm:rounded-[2rem] overflow-hidden shadow-2xl border-r sm:border border-white/10 relative h-full">
             
             {/* Header */}
-            <header className="flex items-center justify-between p-5 border-b border-white/5 bg-white/5 backdrop-blur-xl z-10">
+            <header className="flex-shrink-0 flex items-center justify-between p-5 border-b border-white/5 bg-[#1e293b]/50 backdrop-blur-xl z-20">
               <div className="flex items-center gap-3">
-                <div className="relative group">
-                    <div className="absolute -inset-2 bg-gradient-to-r from-sky-400 to-fuchsia-500 rounded-full blur opacity-40 group-hover:opacity-60 transition-opacity duration-500 animate-pulse-slow"></div>
-                    <div className="relative bg-black/40 p-2.5 rounded-xl border border-white/10">
-                        <AiIcon className="w-5 h-5 text-white"/>
-                    </div>
+                <div className="bg-gradient-to-tr from-sky-500 to-indigo-600 p-2 rounded-xl shadow-lg shadow-sky-500/20">
+                    <AiIcon className="w-5 h-5 text-white"/>
                 </div>
                 <div>
-                    <h2 className="text-lg font-bold text-white tracking-tight">Gemini 3 Pro</h2>
-                    <div className="flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                        <p className="text-xs text-sky-300 font-medium tracking-wide">Live Reasoning Active</p>
-                    </div>
+                    <h2 className="text-base font-bold text-slate-100 tracking-tight">Gemini 3 Pro</h2>
+                    <p className="text-[10px] text-sky-400 font-medium tracking-wider uppercase">Generative Assistant</p>
                 </div>
               </div>
-              <button onClick={onClose} className="p-2 text-slate-400 hover:text-white transition-colors rounded-full hover:bg-white/10">
-                <CloseIcon className="w-6 h-6" />
+              <button onClick={onClose} className="p-2 text-slate-400 hover:text-white transition-colors rounded-full hover:bg-white/5">
+                <CloseIcon className="w-5 h-5" />
               </button>
             </header>
             
-            {/* Chat Area */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6 scroll-smooth z-10">
-              {messages.map((message) => (
-                <div key={message.id} className={`flex items-start gap-3 w-full ${message.sender === 'user' ? 'flex-row-reverse' : ''}`}>
-                  {message.sender === 'ai' && (
-                    <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/20">
-                      <AiIcon className="w-4 h-4 text-white" />
+            {/* Messages Area */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth z-10 custom-scrollbar">
+              {messages.map((message) => {
+                  const isHeb = message.text ? isHebrew(message.text) : false;
+                  
+                  // Tool/System Message
+                  if (message.type === 'tool_log' && message.toolInfo) {
+                      return (
+                        <div key={message.id} className="animate-fade-in-up mx-4 my-2">
+                             <div className="relative overflow-hidden rounded-xl border border-sky-500/30 bg-sky-900/10 p-3 flex items-center gap-3">
+                                <div className={`p-1.5 rounded-full ${message.toolInfo.status === 'calling' ? 'bg-sky-500/20 animate-pulse' : 'bg-emerald-500/20'}`}>
+                                    {message.toolInfo.status === 'calling' ? (
+                                        <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+                                    ) : (
+                                        <CheckIcon className="w-4 h-4 text-emerald-400" />
+                                    )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-bold text-sky-300 uppercase tracking-wider">{message.toolInfo.name}</p>
+                                    <p className="text-xs text-slate-400 truncate font-mono mt-0.5">
+                                        {message.toolInfo.args?.title || 'Updating canvas...'}
+                                    </p>
+                                </div>
+                             </div>
+                        </div>
+                      );
+                  }
+
+                  // Standard Message
+                  return (
+                    <div key={message.id} className={`flex w-full ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[90%] flex flex-col ${message.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                            
+                            {/* Image Attachment */}
+                            {message.image && (
+                                <img src={message.image} alt="attachment" className="rounded-2xl max-h-48 w-auto mb-2 border border-white/10 shadow-lg object-cover" />
+                            )}
+
+                            {/* Thought / Reasoning Bubble (Only for AI) */}
+                            {message.thought && message.sender === 'ai' && (
+                                <div className="mb-2 w-full animate-fade-in">
+                                    <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl rounded-tl-none p-3 shadow-inner">
+                                        <div className="flex items-center gap-2 mb-1.5 opacity-80">
+                                            <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></div>
+                                            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Reasoning Process</span>
+                                        </div>
+                                        <p className="text-xs text-indigo-200/80 font-mono leading-relaxed whitespace-pre-wrap">
+                                            {message.thought}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Text Bubble */}
+                            {message.text && (
+                                <div 
+                                    className={`
+                                        relative px-5 py-3.5 rounded-2xl text-sm leading-relaxed shadow-sm
+                                        ${message.sender === 'user' 
+                                            ? 'bg-[#3b82f6] text-white rounded-tr-none' 
+                                            : 'bg-[#1e293b] text-slate-200 rounded-tl-none border border-white/5'}
+                                        ${isHeb ? 'text-right' : 'text-left'}
+                                        ${isHeb ? 'font-sans' : ''}
+                                    `}
+                                    dir={isHeb ? 'rtl' : 'ltr'}
+                                >
+                                    <SimpleMarkdown text={message.text || ''} />
+                                </div>
+                            )}
+                            
+                            {/* Sender Label */}
+                            <span className="text-[10px] text-slate-500 mt-1 px-1">
+                                {message.sender === 'user' ? 'You' : 'Gemini'}
+                            </span>
+                        </div>
                     </div>
-                  )}
-                  <div className={`flex flex-col gap-2 max-w-[85%] ${message.sender === 'user' ? 'items-end' : 'items-start'}`}>
-                    {message.image && (
-                         <img src={message.image} alt="User upload" className="rounded-xl max-h-48 w-auto mb-2 border border-white/20 shadow-lg" />
-                    )}
-                    {renderMessageContent(message)}
-                  </div>
-                </div>
-              ))}
+                  );
+              })}
               
-              {/* Thinking Indicator */}
-              {thinkingState === 'thinking' && (
-                 <div className="flex items-start gap-3 animate-fade-in w-full">
-                   <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/20">
-                      <AiIcon className="w-4 h-4 text-white" />
+              {/* Initial Loading Indicator (Before first chunk) */}
+              {isThinking && (
+                 <div className="flex justify-start w-full animate-fade-in">
+                    <div className="bg-[#1e293b] border border-white/5 rounded-2xl rounded-tl-none px-5 py-4 flex items-center gap-3 shadow-lg">
+                        <div className="relative w-4 h-4">
+                            <span className="absolute inset-0 bg-violet-500 rounded-full animate-ping opacity-75"></span>
+                            <span className="absolute inset-0 bg-violet-500 rounded-full"></span>
+                        </div>
+                        <span className="text-xs font-mono text-violet-300 tracking-wider animate-pulse">
+                            Reasoning...
+                        </span>
                     </div>
-                   <div className="glass-input px-4 py-3 rounded-2xl rounded-bl-none flex items-center gap-3 border border-sky-500/30 shadow-[0_0_20px_rgba(14,165,233,0.15)] flex-1 max-w-[85%]">
-                     <div className="flex space-x-1">
-                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0s'}}></span>
-                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0.15s'}}></span>
-                        <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{animationDelay: '0.3s'}}></span>
-                     </div>
-                     <span className="text-xs font-mono text-sky-300 tracking-wider uppercase">Deep Reasoning Process...</span>
-                   </div>
                  </div>
               )}
+              
                {error && !isLoading && (
                   <div className="flex justify-center p-2 animate-fade-in">
-                      <p className="text-xs font-mono text-red-300 bg-red-500/10 border border-red-500/20 px-4 py-2 rounded-lg backdrop-blur-sm">{error}</p>
+                      <p className="text-xs font-medium text-red-300 bg-red-500/10 border border-red-500/20 px-3 py-1.5 rounded-full">{error}</p>
                   </div>
                 )}
               <div ref={messagesEndRef} />
             </div>
             
             {/* Input Area */}
-            <footer className="p-5 border-t border-white/5 bg-black/40 backdrop-blur-xl z-20">
+            <footer className="p-4 bg-[#0f172a] border-t border-white/5 z-20">
               {previewUrl && (
-                  <div className="relative mb-3 inline-block animate-fade-in-up">
-                      <img src={previewUrl} alt="Preview" className="h-16 rounded-lg border border-white/20 shadow-lg"/>
-                      <button onClick={() => setAttachedFile(null)} className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full p-1 border border-white/20 hover:bg-red-500 hover:border-red-500 transition-colors">
+                  <div className="flex items-center gap-2 mb-3 bg-[#1e293b] p-2 rounded-xl border border-white/10 w-fit animate-fade-in-up">
+                      <img src={previewUrl} alt="Preview" className="h-10 w-10 rounded-lg object-cover"/>
+                      <span className="text-xs text-slate-400 max-w-[100px] truncate">Image attached</span>
+                      <button onClick={() => setAttachedFile(null)} className="ml-2 p-1 hover:bg-white/10 rounded-full text-slate-400 hover:text-white">
                           <CloseIcon className="w-3 h-3" />
                       </button>
                   </div>
               )}
-              <form onSubmit={handleSubmit} className="flex items-end gap-3">
-                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
-                <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="p-3.5 glass-button text-slate-300 rounded-xl hover:text-sky-300 group transition-all"
-                    title="Upload Image"
-                >
-                    <PaperclipIcon className="w-5 h-5 group-hover:scale-110 transition-transform"/>
-                </button>
-                <div className="relative flex-1 group">
+              
+              <form onSubmit={handleSubmit} className="relative group">
+                 {/* Glass background for input */}
+                 <div className="absolute inset-0 bg-white/5 rounded-2xl blur-sm -z-10"></div>
+                 
+                 <div className="flex items-center bg-[#1e293b] border border-white/10 rounded-2xl p-1.5 focus-within:ring-2 focus-within:ring-sky-500/50 focus-within:border-sky-500/50 transition-all shadow-xl">
+                    
+                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-2.5 text-slate-400 hover:text-sky-300 hover:bg-sky-500/10 rounded-xl transition-all"
+                        title="Upload Image"
+                    >
+                        <PaperclipIcon className="w-5 h-5"/>
+                    </button>
+
                     <input
                       ref={inputRef}
                       type="text"
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
-                      placeholder="Describe your vision..."
+                      placeholder="Type a message..."
                       disabled={isLoading || !!error}
-                      className="w-full glass-input text-sm text-white placeholder-slate-400 rounded-xl pl-4 pr-12 py-3.5 outline-none focus:border-sky-500/50 focus:bg-white/5 transition-all disabled:opacity-50"
+                      className={`flex-1 bg-transparent text-sm text-white placeholder-slate-500 px-3 py-2 outline-none disabled:opacity-50 ${isHebrew(input) ? 'text-right' : 'text-left'}`}
+                      dir={isHebrew(input) ? 'rtl' : 'ltr'}
                     />
+
                     <button 
                       type="submit" 
                       disabled={isLoading || (!input.trim() && !attachedFile) || !!error}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 bg-gradient-to-tr from-sky-500 to-indigo-500 text-white rounded-lg hover:shadow-[0_0_15px_rgba(14,165,233,0.4)] disabled:opacity-50 disabled:shadow-none transition-all duration-300"
+                      className="p-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl shadow-lg shadow-sky-500/20 disabled:opacity-50 disabled:shadow-none disabled:bg-slate-700 transition-all transform active:scale-95"
                     >
-                      <SendIcon className="w-4 h-4"/>
+                      {isLoading ? (
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                          <SendIcon className="w-4 h-4"/>
+                      )}
                     </button>
-                </div>
+                 </div>
               </form>
             </footer>
         </div>
